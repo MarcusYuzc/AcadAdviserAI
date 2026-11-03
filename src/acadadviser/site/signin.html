@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in | AcadAdviserAI</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/auth.js" defer></script>
+</head>
+<body class="auth-body" data-auth-page="signin">
+<main class="auth-modal">
+  <aside class="auth-side">
+    <span class="auth-logo"><img src="/static/favicon.svg" alt="" width="72" height="72"></span>
+    <p class="auth-name">AcadAdviserAI</p>
+    <p class="auth-tagline">Graduate program recommendations</p>
+    <p class="auth-perk">A researched list you can question and change.</p>
+  </aside>
+
+  <section class="auth-main">
+    <a class="auth-close" href="/" aria-label="Back to the home page">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </a>
+    <noscript><p class="form-error">Sign-in needs JavaScript. Please turn it on and reload this page.</p></noscript>
+
+    <form class="auth-view" id="view-signin">
+      <h1>Sign in</h1>
+      <label class="sr-only" for="signin-email">Email</label>
+      <input class="auth-input" id="signin-email" type="email" autocomplete="username" placeholder="Email" required>
+      <label class="sr-only" for="signin-password">Password</label>
+      <input class="auth-input" id="signin-password" type="password" autocomplete="current-password" placeholder="Password" required>
+      <button class="auth-submit" type="submit">Sign in</button>
+      <p class="auth-foot"><button class="auth-link" type="button" data-view="forgot">Forgot your password?</button></p>
+      <p class="auth-foot">New here? <button class="auth-link" type="button" data-view="signup">Create an account</button></p>
+    </form>
+
+    <form class="auth-view" id="view-signup" hidden>
+      <h1>Create your account</h1>
+      <label class="sr-only" for="signup-email">Email</label>
+      <input class="auth-input" id="signup-email" type="email" autocomplete="username" placeholder="Email" required>
+      <label class="sr-only" for="signup-password">Password</label>
+      <input class="auth-input" id="signup-password" type="password" autocomplete="new-password" placeholder="Password" minlength="10" aria-describedby="signup-hint" required>
+      <p class="auth-hint" id="signup-hint">At least 10 characters, with an uppercase letter, a lowercase letter and a number.</p>
+      <button class="auth-submit" type="submit">Create account</button>
+      <label class="auth-consent">
+        <input type="checkbox" required>
+        <span>I have read and agree to the <a href="/terms" target="_blank" rel="noopener">Terms</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy notice</a>.</span>
+      </label>
+      <p class="auth-foot">Already have an account? <button class="auth-link" type="button" data-view="signin">Sign in</button></p>
+    </form>
+
+    <form class="auth-view" id="view-confirm" hidden>
+      <h1>Check your email</h1>
+      <p class="auth-hint">We sent a verification code to <strong id="confirm-email"></strong>. It may take a minute, and it may land in spam.</p>
+      <div class="auth-code-row">
+        <label class="sr-only" for="confirm-code">Verification code</label>
+        <input class="auth-input" id="confirm-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Verification code" required>
+        <button class="auth-code-button" type="button" id="confirm-resend">Resend code</button>
+      </div>
+      <button class="auth-submit" type="submit">Verify and sign in</button>
+      <p class="auth-foot"><button class="auth-link" type="button" data-view="signin">Back to sign in</button></p>
+    </form>
+
+    <form class="auth-view" id="view-forgot" hidden>
+      <h1>Reset your password</h1>
+      <p class="auth-hint">Enter your email and we will send you a code.</p>
+      <label class="sr-only" for="forgot-email">Email</label>
+      <input class="auth-input" id="forgot-email" type="email" autocomplete="username" placeholder="Email" required>
+      <button class="auth-submit" type="submit">Send code</button>
+      <p class="auth-foot"><button class="auth-link" type="button" data-view="signin">Back to sign in</button></p>
+    </form>
+
+    <form class="auth-view" id="view-reset" hidden>
+      <h1>Choose a new password</h1>
+      <p class="auth-hint">If <strong id="reset-email"></strong> has an account, we sent it a code.</p>
+      <div class="auth-code-row">
+        <label class="sr-only" for="reset-code">Reset code</label>
+        <input class="auth-input" id="reset-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Reset code" required>
+        <button class="auth-code-button" type="button" id="reset-resend">Resend code</button>
+      </div>
+      <label class="sr-only" for="reset-password">New password</label>
+      <input class="auth-input" id="reset-password" type="password" autocomplete="new-password" placeholder="New password" minlength="10" aria-describedby="reset-hint" required>
+      <p class="auth-hint" id="reset-hint">At least 10 characters, with an uppercase letter, a lowercase letter and a number.</p>
+      <button class="auth-submit" type="submit">Save and sign in</button>
+      <p class="auth-foot"><button class="auth-link" type="button" data-view="signin">Back to sign in</button></p>
+    </form>
+
+    <p class="form-error auth-message" id="auth-error" role="alert" hidden></p>
+    <p class="auth-status" id="auth-status" role="status" hidden></p>
+    <p class="auth-help">Need help? {{CONTACT}}</p>
+  </section>
+</main>
+</body>
+</html>

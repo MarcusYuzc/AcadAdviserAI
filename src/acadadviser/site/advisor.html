@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My profile and list | AcadAdviserAI</title>
+  <meta name="description" content="Share your student profile and get a graduate program list.">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  {{SIDEBAR}}
+  <div class="content">
+    <main class="stack tool">
+      <h1 class="page-title">My profile &amp; list</h1>
+        <form id="profile-form" class="panel" novalidate>
+          <h2>Your student profile</h2>
+          <p class="hint">A resume gives the best results. If you do not have one to hand, describe your background below. A search usually takes a few minutes.</p>
+
+          <fieldset>
+            <legend>Background</legend>
+            <div class="grid two">
+              <label>Resume <small>PDF or .docx, up to 10 MB</small>
+                <input type="file" name="resume" accept=".pdf,.docx"></label>
+              <label>Transcript <small>Optional</small>
+                <input type="file" name="transcript" accept=".pdf,.docx"></label>
+            </div>
+            <label>Or describe your background
+              <textarea name="background" rows="5" maxlength="4000" placeholder="School and major, GPA and its scale, key courses, research, internships, work experience"></textarea></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>What you are looking for</legend>
+            <div class="grid two">
+              <label>Fields of study<input name="intended_majors" maxlength="500" placeholder="Statistics, data science"></label>
+              <label>Degree type<input name="degree_preferences" maxlength="500" placeholder="Master's, 18 to 24 months"></label>
+              <label>Where you want to study<input name="geographic_preferences" maxlength="500" placeholder="United States, prefer the West Coast"></label>
+              <label>Budget<input name="financial_constraints" maxlength="500" placeholder="Under $60,000 tuition per year"></label>
+            </div>
+            <label>Career goals<input name="career_goals" maxlength="1000" placeholder="Data scientist in industry after graduating"></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Test scores <small>Only the ones you have</small></legend>
+            <div class="grid four">
+              <label>GRE<input name="gre" maxlength="60" placeholder="324"></label>
+              <label>GMAT<input name="gmat" maxlength="60"></label>
+              <label>TOEFL<input name="toefl" maxlength="60" placeholder="105"></label>
+              <label>IELTS<input name="ielts" maxlength="60"></label>
+            </div>
+          </fieldset>
+
+          <label class="consent"><input type="checkbox" name="consent" value="yes">
+            <span>I agree that my profile is stored by AcadAdviserAI and sent to OpenAI to generate this list, as described in the <a href="/privacy" target="_blank">privacy notice</a>. I have left out anything I do not want to share.</span></label>
+          <p class="form-error" id="form-error" role="alert" hidden></p>
+          <button class="button primary" id="submit" type="submit">Build my program list</button>
+        </form>
+
+        <section id="results" class="panel" hidden aria-live="polite">
+          <div class="results-head">
+            <h2>Your program list</h2>
+            <button class="button quiet" id="new-search" type="button">Start a new search</button>
+          </div>
+          <ol class="progress" id="progress">
+            <li data-stage="reading">Reading your profile</li>
+            <li data-stage="searching">Searching university sites</li>
+            <li data-stage="finalizing">Checking and assembling your list</li>
+          </ol>
+          <p class="form-error" id="run-error" role="alert" hidden></p>
+          <div id="list"></div>
+          <aside id="note" class="note" hidden></aside>
+          <div id="actions" class="actions" hidden>
+            <form id="refine">
+              <label for="refine-text">Change this list</label>
+              <div class="refine-row">
+                <input id="refine-text" maxlength="2000" placeholder="Focus on schools in California with no GRE requirement">
+                <button class="button primary" type="submit">Update</button>
+              </div>
+            </form>
+            <div class="action-row">
+              <button class="button quiet" id="find-more" type="button">Find more programs</button>
+              <a class="button quiet" id="download" href="#">Download list</a>
+            </div>
+          </div>
+        </section>
+    </main>
+    {{FOOTER}}
+  </div>
+</div>
+</body>
+</html>

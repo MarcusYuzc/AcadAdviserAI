@@ -1,0 +1,7 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/acadadviser-infra.ts",
+  "context": {
+    "domain": "acadadviser.com",
+    "certificateArn": "arn:aws:acm:us-east-1:097771562795:certificate/eb547958-089d-40a6-947e-5c33566cf1a0"
+  }
+}

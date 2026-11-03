@@ -1,0 +1,27 @@
+# Public entry point. Terminates HTTPS with automatic Let's Encrypt certificates.
+# Variables are supplied by scripts/stack.py caddy.
+{
+	email {$ACME_EMAIL}
+}
+
+www.{$SITE_DOMAIN} {
+	redir https://{$SITE_DOMAIN}{uri} permanent
+}
+
+{$SITE_DOMAIN} {
+	encode gzip
+	request_body {
+		max_size 25MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:9080 {
+		# Progress events must reach the browser as they happen.
+		flush_interval -1
+	}
+	log {
+		output file {$AA_LOG_DIR}/caddy-access.log
+	}
+}

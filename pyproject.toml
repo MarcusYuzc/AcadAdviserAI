@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acadadviser"
+version = "0.1.0"
+description = "AcadAdviserAI public website and gateway for StudentNormalizer, SchoolInfoProcessor and ProgramSearchAgent."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "pydantic-settings>=2.4",
+  "python-multipart>=0.0.9",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+acadadviser = ["site/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
