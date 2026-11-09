@@ -6,9 +6,9 @@
   <title>My account | AcadAdviserAI</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css">
-  <script src="/static/auth.js" defer></script>
+  <script src="/static/account.js" defer></script>
 </head>
-<body data-auth-page="account">
+<body>
 <div class="shell">
   {{SIDEBAR}}
   <div class="content">
@@ -16,13 +16,39 @@
       <section class="panel auth-card" id="account-loading" aria-live="polite">
         <h1>Your account</h1>
         <p>One moment…</p>
-        <noscript><p class="form-error">Sign-in needs JavaScript. Please turn it on and reload this page.</p></noscript>
+        <noscript><p class="form-error">Your account page needs JavaScript. Please turn it on and reload this page.</p></noscript>
       </section>
+
       <section class="panel auth-card" id="account-ready" hidden>
-        <h1>You are signed in</h1>
+        <h1>Your account</h1>
         <p>Signed in as <strong id="account-email"></strong></p>
-        <p class="account-note"><strong>Program lists are opening soon.</strong> We are finishing this part of AcadAdviserAI, so you cannot start a list yet.</p>
-        <button class="button quiet" id="sign-out" type="button">Sign out</button>
+
+        <div class="plan-box" id="plan-confirming" hidden aria-live="polite">
+          <h2>Confirming your payment…</h2>
+          <p class="account-note" id="confirming-note">This usually takes a few seconds.</p>
+        </div>
+
+        <div class="plan-box" id="plan-subscribed" hidden>
+          <h2>Unlimited plan</h2>
+          <p id="plan-renewal"></p>
+          <p class="account-note">Search as often as you like, within fair use. Each search includes <span data-follow-ups></span> refinements.</p>
+          <button class="button quiet" id="manage-billing" type="button">Manage billing or cancel</button>
+        </div>
+
+        <div class="plan-box" id="plan-free" hidden>
+          <h2>Free plan</h2>
+          <p id="free-status"></p>
+          <p class="account-note">The unlimited plan is <strong data-price></strong>. Search as often as you like, within fair use, with <span data-follow-ups></span> refinements per search. Available in the United States.</p>
+          <label class="consent"><input type="checkbox" id="renewal-consent">
+            <span>I understand the plan renews automatically at <strong data-price></strong> until I cancel, and that I can cancel any time from this page. See the <a href="/terms" target="_blank">terms</a>.</span></label>
+          <button class="button primary" id="subscribe" type="button">Subscribe</button>
+        </div>
+
+        <p class="form-error" id="account-error" role="alert" hidden></p>
+        <div class="action-row">
+          <a class="button quiet" href="/advisor">Go to my program list</a>
+          <button class="button quiet" id="sign-out" type="button">Sign out</button>
+        </div>
       </section>
     </main>
     {{FOOTER}}

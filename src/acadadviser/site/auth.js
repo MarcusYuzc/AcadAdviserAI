@@ -1,8 +1,7 @@
 "use strict";
 // Sign-in forms that talk directly to the Amazon Cognito API over HTTPS.
-// Only the signed-in email is kept, for this browser tab. Tokens are discarded.
-
-const EMAIL_KEY = "acadadviser.email";
+// The ID token goes to the gateway once, which checks it and sets its own session cookie.
+// No token is kept in the browser.
 
 const ERROR_MESSAGES = {
   NotAuthorizedException: "Incorrect email or password.",
@@ -42,10 +41,20 @@ async function callCognito(config, action, body) {
   throw error;
 }
 
-function emailFromIdToken(idToken) {
-  const payload = idToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-  const bytes = Uint8Array.from(atob(payload), (char) => char.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes)).email;
+// Only a path on this site, so a crafted link cannot send people elsewhere after sign-in.
+function nextPath() {
+  const next = new URLSearchParams(location.search).get("next") || "";
+  return /^\/(?![\/\\])/.test(next) ? next : "/account";
+}
+
+async function startSession(idToken) {
+  const response = await fetch("/api/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: idToken }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : GENERIC_ERROR);
 }
 
 function setMessage(id, text) {
@@ -77,8 +86,8 @@ function initSignIn(config) {
       AuthParameters: { USERNAME: email, PASSWORD: password },
     });
     if (!result) throw new Error(GENERIC_ERROR);
-    sessionStorage.setItem(EMAIL_KEY, emailFromIdToken(result.IdToken));
-    location.replace("/account.html");
+    await startSession(result.IdToken);
+    location.replace(nextPath());
   }
 
   function showConfirm() {
@@ -182,8 +191,9 @@ function initSignIn(config) {
 }
 
 async function startSignIn() {
-  if (sessionStorage.getItem(EMAIL_KEY)) {
-    location.replace("/account.html");
+  const account = await fetch("/api/account", { cache: "no-store" }).catch(() => null);
+  if (account?.ok) {
+    location.replace(nextPath());
     return;
   }
   try {
@@ -193,20 +203,4 @@ async function startSignIn() {
   }
 }
 
-function showAccount() {
-  const email = sessionStorage.getItem(EMAIL_KEY);
-  if (!email) {
-    location.replace("/signin.html");
-    return;
-  }
-  byId("account-email").textContent = email;
-  byId("account-loading").hidden = true;
-  byId("account-ready").hidden = false;
-  byId("sign-out").addEventListener("click", () => {
-    sessionStorage.removeItem(EMAIL_KEY);
-    location.assign("/");
-  });
-}
-
-if (document.body.dataset.authPage === "account") showAccount();
-else startSignIn();
+startSignIn();

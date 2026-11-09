@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
-import secrets
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -14,18 +14,19 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from acadadviser.auth import CognitoVerifier, Identity, InvalidToken, email_key
+from acadadviser.billing import Billing, InvalidEvent, interpret
 from acadadviser.catalog import Catalog
 from acadadviser.config import Settings, get_settings
-from acadadviser.db import Database, LimitReached
+from acadadviser.db import Database, LimitReached, PaymentRequired, User
 from acadadviser.events import public_item, translate
 from acadadviser.pages import render
 from acadadviser.profile_doc import typed_profile_docx
 
 _log = logging.getLogger("acadadviser")
 _SITE = Path(__file__).resolve().parent / "site"
-_COOKIE = "aa_session"
-_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
-_LOOPBACK = {"127.0.0.1", "::1", "testclient"}
+_COOKIE = "aa_account"
+_SESSION_DAYS = 30
 _MAX_BODY_BYTES = 25 * 1024 * 1024
 _MAX_STREAM_SECONDS = 15 * 60
 _CREATE_TIMEOUT = httpx.Timeout(300.0, connect=5.0)
@@ -33,10 +34,6 @@ _STREAM_TIMEOUT = httpx.Timeout(60.0, connect=5.0)
 _PDF_MAGIC = b"%PDF-"
 _ZIP_MAGIC = b"PK\x03\x04"
 _SECURITY_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-        "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-    ),
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -51,13 +48,37 @@ class DropBody(BaseModel):
     web_id: str = Field(..., min_length=1, max_length=128)
 
 
-def client_ip(request: Request) -> str:
-    """Caddy overwrites X-Forwarded-For, so it is only trusted from a loopback peer."""
+class SessionBody(BaseModel):
+    id_token: str = Field(..., min_length=1, max_length=8192)
+
+
+class CheckoutBody(BaseModel):
+    renewal_consent: bool = False
+
+
+def content_security_policy(settings: Settings) -> str:
+    # The sign-in form calls the Cognito API straight from the browser.
+    cognito = f" https://cognito-idp.{settings.cognito_region}.amazonaws.com"
+    return (
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        f"connect-src 'self'{cognito}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    )
+
+
+def trusted_proxies(settings: Settings) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    return [ipaddress.ip_network(cidr.strip()) for cidr in settings.trusted_proxy_cidrs.split(",") if cidr.strip()]
+
+
+def client_ip(request: Request, proxies: list) -> str:
+    """The proxy appends the address it saw, so the last X-Forwarded-For entry is trusted from a proxy only."""
     peer = request.client.host if request.client else ""
-    if peer in _LOOPBACK:
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",")[-1].strip()
+    try:
+        from_proxy = peer == "testclient" or any(ipaddress.ip_address(peer) in net for net in proxies)
+    except ValueError:
+        from_proxy = False
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if from_proxy and forwarded:
+        return forwarded.split(",")[-1].strip()
     return peer
 
 
@@ -87,12 +108,23 @@ def create_app(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     catalog: Catalog | None = None,
+    verifier: Any = None,
+    billing: Billing | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="AcadAdviserAI", docs_url=None, redoc_url=None, openapi_url=None)
-    database = Database(settings.data_dir / "gateway.sqlite3")
+    database = Database(settings.database_target())
+    proxies = trusted_proxies(settings)
     catalog = catalog or Catalog(settings.sip_url)
     uploads = asyncio.Semaphore(settings.concurrent_uploads)
+    csp = content_security_policy(settings)
+    if verifier is None and settings.cognito_user_pool_id and settings.cognito_client_id:
+        verifier = CognitoVerifier(
+            settings.cognito_region, settings.cognito_user_pool_id, settings.cognito_client_id
+        )
+    billing = billing or Billing(
+        settings.stripe_secret_key, settings.stripe_webhook_secret, settings.stripe_price_id
+    )
 
     def client(timeout: httpx.Timeout = _STREAM_TIMEOUT) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=settings.psa_url, timeout=timeout, transport=transport)
@@ -101,10 +133,26 @@ def create_app(
         content = render(name, active, settings.contact_email)
         return HTMLResponse(content, headers={"Cache-Control": "no-cache"})
 
-    def owned(request: Request, thread_id: str) -> None:
+    def current_user(request: Request) -> User | None:
+        return database.session_user(request.cookies.get(_COOKIE))
+
+    def require_user(request: Request) -> User:
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Please sign in to continue.")
+        return user
+
+    def owned(request: Request, thread_id: str) -> User:
+        user = require_user(request)
         # The same 404 for missing and foreign searches, so ids cannot be probed.
-        if not database.owns(thread_id, request.cookies.get(_COOKIE)):
+        if not database.owns(thread_id, user):
             raise HTTPException(status_code=404, detail="Search not found.")
+        return user
+
+    def base_url(request: Request) -> str:
+        if settings.site_domain and settings.cookie_secure:
+            return f"https://{settings.site_domain}"
+        return str(request.base_url).rstrip("/")
 
     async def enrich(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return await asyncio.to_thread(catalog.enrich, [public_item(item) for item in items])
@@ -128,6 +176,9 @@ def create_app(
             if origin and origin not in allowed:
                 return JSONResponse({"detail": "Cross-site request rejected."}, status_code=403)
         response = await call_next(request)
+        response.headers.setdefault("Content-Security-Policy", csp)
+        if settings.cookie_secure:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
         for key, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(key, value)
         return response
@@ -135,6 +186,10 @@ def create_app(
     @app.exception_handler(LimitReached)
     async def limit_reached(request: Request, exc: LimitReached):
         return JSONResponse({"detail": str(exc)}, status_code=429)
+
+    @app.exception_handler(PaymentRequired)
+    async def payment_required(request: Request, exc: PaymentRequired):
+        return JSONResponse({"detail": str(exc), "subscribe": "/account"}, status_code=402)
 
     @app.exception_handler(httpx.HTTPError)
     async def upstream_unreachable(request: Request, exc: httpx.HTTPError):
@@ -152,10 +207,25 @@ def create_app(
     def advisor() -> HTMLResponse:
         return page("advisor.html", "advisor")
 
-    # Local stack only, which has no sign-in yet. The public site signs in through Cognito.
-    @app.get("/signin", include_in_schema=False)
-    def signin() -> RedirectResponse:
-        return RedirectResponse("/advisor", status_code=302)
+    @app.api_route("/signin", methods=["GET", "HEAD"], include_in_schema=False)
+    def signin() -> HTMLResponse:
+        return page("signin.html", "signin")
+
+    @app.api_route("/account", methods=["GET", "HEAD"], include_in_schema=False)
+    def account_page() -> HTMLResponse:
+        return page("account.html", "account")
+
+    # Pages from the old static site.
+    @app.get("/signin.html", include_in_schema=False)
+    @app.get("/account.html", include_in_schema=False)
+    def old_page(request: Request) -> RedirectResponse:
+        return RedirectResponse(request.url.path.removesuffix(".html"), status_code=301)
+
+    @app.get("/static/auth-config.json", include_in_schema=False)
+    def auth_config() -> dict[str, str]:
+        if verifier is None:
+            raise HTTPException(status_code=404, detail="Sign-in is not set up.")
+        return {"region": settings.cognito_region, "clientId": settings.cognito_client_id}
 
     @app.api_route("/privacy", methods=["GET", "HEAD"], include_in_schema=False)
     def privacy() -> HTMLResponse:
@@ -168,6 +238,88 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/api/session")
+    async def create_session(body: SessionBody) -> JSONResponse:
+        if verifier is None:
+            raise HTTPException(status_code=503, detail="Sign-in is not available right now.")
+        try:
+            identity: Identity = await asyncio.to_thread(verifier.verify, body.id_token)
+        except InvalidToken as exc:
+            _log.info("rejected sign-in token: %s", exc)
+            raise HTTPException(status_code=401, detail="Your sign-in could not be confirmed. Please sign in again.")
+        token = database.sign_in(identity.sub, identity.email, _SESSION_DAYS)
+        response = JSONResponse({"email": identity.email})
+        response.set_cookie(
+            _COOKIE, token, max_age=_SESSION_DAYS * 24 * 60 * 60, httponly=True,
+            secure=settings.cookie_secure, samesite="lax",
+        )
+        return response
+
+    @app.post("/api/session/sign-out")
+    def sign_out(request: Request) -> JSONResponse:
+        if token := request.cookies.get(_COOKIE):
+            database.sign_out(token)
+        response = JSONResponse({"status": "ok"})
+        response.delete_cookie(_COOKIE, httponly=True, secure=settings.cookie_secure, samesite="lax")
+        return response
+
+    @app.get("/api/account")
+    def account(request: Request) -> dict[str, Any]:
+        user = require_user(request)
+        return {
+            "email": user.email,
+            "price": settings.plan_price_label,
+            "billing_available": billing.enabled,
+            "has_billing_account": bool(user.stripe_customer_id),
+            "free_follow_ups": settings.free_follow_ups,
+            "follow_ups_per_search": settings.follow_ups_per_search,
+            **database.account(user.sub, email_key(user.email)),
+        }
+
+    @app.post("/api/billing/checkout")
+    async def checkout(request: Request, body: CheckoutBody) -> dict[str, str]:
+        user = require_user(request)
+        if not billing.enabled:
+            raise HTTPException(status_code=503, detail="Subscriptions are not open yet.")
+        if database.account(user.sub, email_key(user.email))["subscribed"]:
+            raise HTTPException(status_code=409, detail="You already have a subscription.")
+        if not body.renewal_consent:
+            raise HTTPException(
+                status_code=400, detail="Please confirm that the plan renews every year until you cancel."
+            )
+        database.record_renewal_consent(user.sub)
+        url = await asyncio.to_thread(
+            billing.checkout_url, user_sub=user.sub, email=user.email,
+            customer_id=user.stripe_customer_id, base_url=base_url(request),
+        )
+        return {"url": url}
+
+    @app.post("/api/billing/portal")
+    async def billing_portal(request: Request) -> dict[str, str]:
+        user = require_user(request)
+        if not billing.enabled:
+            raise HTTPException(status_code=503, detail="Billing is not available right now.")
+        if not user.stripe_customer_id:
+            raise HTTPException(status_code=404, detail="There is no billing account yet.")
+        url = await asyncio.to_thread(billing.portal_url, user.stripe_customer_id, base_url(request))
+        return {"url": url}
+
+    # Stripe sends no Origin header, so the cross-site guard lets it through; the signature is the check.
+    @app.post("/api/stripe/webhook", include_in_schema=False)
+    async def stripe_webhook(request: Request) -> dict[str, bool]:
+        if not billing.enabled:
+            raise HTTPException(status_code=503, detail="Billing is not configured.")
+        try:
+            event = billing.parse_event(await request.body(), request.headers.get("stripe-signature", ""))
+        except InvalidEvent as exc:
+            _log.warning("rejected stripe webhook: %s", exc)
+            raise HTTPException(status_code=400, detail="Invalid signature.")
+        update = interpret(event)
+        if update.country and update.country != "US":
+            _log.warning("checkout from outside the US: event=%s country=%s", update.event_id, update.country)
+        database.apply_stripe_update(update)
+        return {"received": True}
 
     @app.post("/api/searches")
     async def create_search(
@@ -186,6 +338,7 @@ def create_app(
         toefl: str = Form(""),
         ielts: str = Form(""),
     ) -> JSONResponse:
+        user = require_user(request)
         if consent != "yes":
             raise HTTPException(status_code=400, detail="Please accept the data notice to continue.")
         fields = {
@@ -215,28 +368,29 @@ def create_app(
         if uploads.locked():
             raise HTTPException(status_code=503, detail="We are busy right now. Please try again in a minute.")
         async with uploads:
-            database.reserve_search(
-                client_ip(request), settings.model_runs_per_day, settings.searches_per_ip_per_day
+            plan = database.reserve_search(
+                user, email_key(user.email), client_ip(request, proxies),
+                global_limit=settings.model_runs_per_day, ip_limit=settings.searches_per_ip_per_day,
+                user_limit=settings.searches_per_user_per_day,
             )
             # student_id and session_id are never forwarded: PSA mints a fresh id per search.
             files: list[tuple[str, tuple[str, bytes]]] = [("resume", (resume_name, resume_bytes))]
             if transcript_bytes:
                 files.append(("transcript", (transcript_name, transcript_bytes)))
             data = {key: value.strip() for key, value in fields.items() if value.strip()}
-            async with client(_CREATE_TIMEOUT) as http:
-                upstream = await http.post("/v1/threads", data=data, files=files)
+            try:
+                async with client(_CREATE_TIMEOUT) as http:
+                    upstream = await http.post("/v1/threads", data=data, files=files)
+            except httpx.HTTPError:
+                database.release_search(user, plan)
+                raise
         if upstream.status_code != 200:
+            database.release_search(user, plan)
             raise _upstream_failure(upstream)
 
         thread_id = upstream.json()["thread_id"]
-        token = request.cookies.get(_COOKIE) or secrets.token_urlsafe(32)
-        database.add_search(thread_id, token)
-        response = JSONResponse({"search_id": thread_id})
-        response.set_cookie(
-            _COOKIE, token, max_age=_COOKIE_MAX_AGE, httponly=True,
-            secure=settings.cookie_secure, samesite="lax",
-        )
-        return response
+        database.add_search(thread_id, user, plan)
+        return JSONResponse({"search_id": thread_id, "plan": plan})
 
     @app.get("/api/searches/{thread_id}")
     async def show_search(request: Request, thread_id: str) -> dict[str, Any]:
@@ -281,9 +435,10 @@ def create_app(
         )
 
     async def run_follow_up(request: Request, thread_id: str, path: str, **kwargs: Any) -> dict[str, str]:
-        owned(request, thread_id)
+        user = owned(request, thread_id)
         database.reserve_follow_up(
-            thread_id, client_ip(request), settings.model_runs_per_day, settings.follow_ups_per_search
+            thread_id, user, client_ip(request, proxies), global_limit=settings.model_runs_per_day,
+            free_limit=settings.free_follow_ups, paid_limit=settings.follow_ups_per_search,
         )
         async with client() as http:
             response = await http.post(f"/v1/threads/{thread_id}/{path}", **kwargs)

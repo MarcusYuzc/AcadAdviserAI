@@ -313,3 +313,18 @@ fieldset:disabled, .consent.is-disabled { opacity: .72; }
   .school-board { padding: 16px; }
   .offer { min-height: 0; }
 }
+
+/* Plans and billing */
+.plan-banner { background: var(--soft); border: 1px solid #cfe1fb; border-radius: 12px; padding: 10px 16px; font-size: .92rem; }
+.plan-box { justify-self: stretch; display: grid; gap: 10px; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+.plan-box h2 { font-size: 1.12rem; }
+.plan-box .consent { margin-bottom: 0; }
+.plan-box .button { justify-self: start; }
+.price-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; max-width: 760px; }
+.price-card .price { font-size: 1.9rem; font-weight: 800; color: var(--ink); margin: 6px 0 8px; }
+.price-card .price small { font-size: .9rem; font-weight: 600; }
+.price-card.featured { border: 2px solid var(--brand); }
+.price-cta { margin-top: 20px; }
+@media (max-width: 560px) {
+  .price-grid { grid-template-columns: minmax(0, 1fr); }
+}

@@ -6,8 +6,8 @@
   "scripts": {
     "build": "tsc",
     "cdk": "cdk",
-    "synth": "cdk synth AcadAdviserPreviewStack",
-    "deploy": "cdk deploy AcadAdviserPreviewStack"
+    "synth": "cdk synth AcadAdviserStack",
+    "deploy": "cdk deploy AcadAdviserStack"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

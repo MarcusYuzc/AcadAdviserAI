@@ -2,91 +2,7 @@ from __future__ import annotations
 
 import json
 
-import httpx
-import pytest
-from fastapi.testclient import TestClient
-
-from acadadviser.app import create_app
-from acadadviser.config import Settings
-
-PDF = b"%PDF-1.7 synthetic"
-ITEM = {
-    "web_id": "web:1", "university_name": "Example U", "display_name": "MS Statistics",
-    "degree_level": "ms", "official_url": "https://stat.example.edu/ms", "why": "Fits.",
-    "bucket": "target", "warnings": [], "internal_field": "must not leak",
-}
-
-
-class StubCatalog:
-    def enrich(self, items):
-        return [{**item, "catalog": {"gre_policy": "optional"}} for item in items]
-
-
-class StubPsa:
-    def __init__(self):
-        self.creates = []
-        self.posts = []
-        self.create_status = 200
-        self.next_thread = 0
-        self.events = [
-            {"type": "psa.tool.start", "name": "get_student"},
-            {"type": "psa.tool.done", "name": "get_student", "output": "PRIVATE PROFILE"},
-            {"type": "response.web_search_call"},
-            {"type": "psa.run.ready", "run_id": "run_1", "items": [ITEM]},
-            {"type": "agent.session.turn.output_text.done", "text": "Done."},
-            {"type": "psa.error", "message": "secret upstream detail"},
-        ]
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if request.method == "POST" and path == "/v1/threads":
-            self.creates.append(request.content)
-            if self.create_status != 200:
-                return httpx.Response(self.create_status, json={"detail": "secret upstream detail"})
-            self.next_thread += 1
-            return httpx.Response(200, json={"thread_id": f"thr_{self.next_thread}"})
-        if path.endswith("/events"):
-            body = "".join(f"data: {json.dumps(event)}\n\n" for event in self.events)
-            return httpx.Response(200, text=": ping\n\n" + body)
-        if path.endswith("/report"):
-            return httpx.Response(200, text="<html>report</html>")
-        if path.startswith("/v1/runs/"):
-            return httpx.Response(200, json={})
-        if request.method == "GET":
-            return httpx.Response(200, json={
-                "latest_run_id": "run_1",
-                "student_id": "psa-private",
-                "latest_run": {"run_id": "run_1", "items": [ITEM]},
-            })
-        self.posts.append((path, json.loads(request.content or b"{}")))
-        return httpx.Response(200, json={"items": [ITEM]})
-
-
-@pytest.fixture
-def psa():
-    return StubPsa()
-
-
-def make_client(tmp_path, psa, **overrides):
-    settings = Settings(
-        _env_file=None, data_dir=tmp_path, cookie_secure=False, contact_email="hello@example.com",
-        site_domain="example.com", **overrides,
-    )
-    app = create_app(settings, transport=httpx.MockTransport(psa), catalog=StubCatalog())
-    return TestClient(app)
-
-
-@pytest.fixture
-def client(tmp_path, psa):
-    return make_client(tmp_path, psa)
-
-
-def start(client, **data):
-    return client.post(
-        "/api/searches",
-        data={"consent": "yes", **data},
-        files={"resume": ("resume.pdf", PDF, "application/pdf")},
-    )
+from conftest import another_user, make_client, start, subscribe
 
 
 def test_pages_render_contact_and_security_headers(client):
@@ -109,7 +25,8 @@ def test_form_lives_on_the_advisor_page_not_home(client):
     advisor = client.get("/advisor").text
     assert 'id="profile-form"' in advisor
     assert "/static/app.js" in advisor
-    assert client.get("/signin", follow_redirects=False).headers["location"] == "/advisor"
+    assert 'id="view-signin"' in client.get("/signin").text
+    assert client.get("/signin.html", follow_redirects=False).headers["location"] == "/signin"
 
 
 def test_internal_routes_are_not_exposed(client):
@@ -146,17 +63,17 @@ def test_create_never_forwards_caller_chosen_ids(client, psa):
         data={"consent": "yes", "background": "BS Math", "student_id": "victim", "session_id": "s"},
     )
     assert response.status_code == 200
-    assert response.json() == {"search_id": "thr_1"}
+    assert response.json() == {"search_id": "thr_1", "plan": "free"}
     assert b"victim" not in psa.creates[0]
     assert b'name="student_id"' not in psa.creates[0]
     assert b"typed-profile.docx" in psa.creates[0]
 
 
-def test_second_visitor_cannot_read_or_change_a_search(tmp_path, client, psa):
+def test_second_visitor_cannot_read_or_change_a_search(client, psa):
     search = start(client).json()["search_id"]
     assert client.get(f"/api/searches/{search}").status_code == 200
 
-    other = make_client(tmp_path, psa)
+    other = another_user(client)
     for call in (
         lambda: other.get(f"/api/searches/{search}"),
         lambda: other.get(f"/api/searches/{search}/events"),
@@ -196,12 +113,19 @@ def test_upstream_errors_do_not_leak_detail(tmp_path, psa):
     assert "secret" not in response.text
 
 
-def test_ip_daily_limit(tmp_path, psa):
+def test_ip_daily_limit_applies_to_free_searches(tmp_path, psa):
     client = make_client(tmp_path, psa, searches_per_ip_per_day=2)
     assert start(client).status_code == 200
-    assert start(client).status_code == 200
-    assert start(client).status_code == 429
+    assert start(another_user(client, "user-2", "b@example.com")).status_code == 200
+    assert start(another_user(client, "user-3", "c@example.com")).status_code == 429
     assert len(psa.creates) == 2
+
+
+def test_ip_daily_limit_does_not_apply_to_subscribers(tmp_path, psa):
+    client = make_client(tmp_path, psa, searches_per_ip_per_day=1)
+    subscribe(client)
+    assert start(client).status_code == 200
+    assert start(client).status_code == 200
 
 
 def test_global_limit_counts_follow_ups(tmp_path, psa):
@@ -209,11 +133,12 @@ def test_global_limit_counts_follow_ups(tmp_path, psa):
     search = start(client).json()["search_id"]
     assert client.post(f"/api/searches/{search}/find-more").status_code == 200
     assert client.post(f"/api/searches/{search}/find-more").status_code == 429
-    assert start(client).status_code == 429
+    assert start(another_user(client)).status_code == 429
 
 
-def test_follow_up_limit_per_search(tmp_path, psa):
+def test_follow_up_limit_per_paid_search(tmp_path, psa):
     client = make_client(tmp_path, psa, follow_ups_per_search=1)
+    subscribe(client)
     search = start(client).json()["search_id"]
     assert client.post(f"/api/searches/{search}/messages", json={"text": "more"}).status_code == 200
     assert client.post(f"/api/searches/{search}/messages", json={"text": "more"}).status_code == 429
@@ -252,5 +177,28 @@ def test_site_origin_is_accepted(client):
     assert response.status_code == 200
 
 
-def test_session_cookie_is_http_only(client):
-    assert "httponly" in start(client).headers["set-cookie"].lower()
+def test_session_cookie_is_http_only(tmp_path, psa):
+    client = make_client(tmp_path, psa, user=None)
+    response = client.post("/api/session", json={"id_token": "good:user-1:alice@example.com"})
+    assert "httponly" in response.headers["set-cookie"].lower()
+
+
+def test_forwarded_ip_is_trusted_only_from_a_proxy():
+    from types import SimpleNamespace
+
+    from acadadviser.app import client_ip, trusted_proxies
+    from acadadviser.config import Settings
+
+    proxies = trusted_proxies(Settings(_env_file=None, trusted_proxy_cidrs="10.0.0.0/16"))
+
+    def request(peer, forwarded):
+        return SimpleNamespace(client=SimpleNamespace(host=peer), headers={"x-forwarded-for": forwarded})
+
+    assert client_ip(request("10.0.3.7", "6.6.6.6, 203.0.113.9"), proxies) == "203.0.113.9"
+    assert client_ip(request("198.51.100.4", "203.0.113.9"), proxies) == "198.51.100.4"
+
+
+def test_hsts_only_when_served_over_https(tmp_path, psa):
+    assert "strict-transport-security" not in make_client(tmp_path, psa).get("/").headers
+    secure = make_client(tmp_path / "secure", psa, user=None, cookie_secure=True)
+    assert secure.get("/").headers["strict-transport-security"] == "max-age=31536000"

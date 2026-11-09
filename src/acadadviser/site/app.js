@@ -36,10 +36,41 @@ function showError(element, message) {
 async function api(path, options) {
   const response = await fetch(path, options);
   const body = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    location.replace(`/signin?next=${encodeURIComponent("/advisor")}`);
+    throw new Error("Please sign in to continue.");
+  }
   if (!response.ok) {
-    throw new Error(typeof body.detail === "string" ? body.detail : "Something went wrong. Please try again.");
+    const error = new Error(typeof body.detail === "string" ? body.detail : "Something went wrong. Please try again.");
+    error.status = response.status;
+    if (response.status === 402) showPlan();
+    throw error;
   }
   return body;
+}
+
+function banner(text, linkText) {
+  const node = $("plan-banner");
+  node.replaceChildren(text);
+  if (linkText) {
+    const link = el("a", "", linkText);
+    link.href = "/account";
+    node.append(" ", link);
+  }
+  node.hidden = false;
+}
+
+async function showPlan() {
+  try {
+    const account = await api("/api/account", { cache: "no-store" });
+    if (account.subscribed) {
+      banner("Unlimited plan: search as often as you like.");
+    } else if (account.free_search_available) {
+      banner(`Your first search is free, with ${account.free_follow_ups} refinements.`, `Unlimited searches are ${account.price}.`);
+    } else {
+      banner("You have used your free search.", `Subscribe for unlimited searches, ${account.price}.`);
+    }
+  } catch { /* A signed-out visitor is already being sent to sign in. */ }
 }
 
 function setStage(stage) {
@@ -287,4 +318,5 @@ async function resume() {
   }
 }
 
+showPlan();
 resume();

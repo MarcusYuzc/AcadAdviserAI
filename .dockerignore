@@ -1,0 +1,12 @@
+# Allowlist: secrets, local data, logs and the CDK output never enter the image.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!README.md
+!src/
+!src/**
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+**/.DS_Store

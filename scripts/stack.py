@@ -164,6 +164,12 @@ def doctor(_args: argparse.Namespace) -> int:
           "a personal ChatGPT plan must not serve the public; set PSA_AUTH_MODE=api_key")
     check(env_has_value(HOME / "ProgramSearchAgent/.env", "OPENAI_API_KEY"), "PSA has an OpenAI API key",
           "add OPENAI_API_KEY to ProgramSearchAgent/.env")
+    check(bool(env.get("COGNITO_USER_POOL_ID") and env.get("COGNITO_CLIENT_ID")), "Cognito sign-in is set",
+          "set COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID in .env")
+    stripe_keys = ("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID")
+    check(all(env.get(key) for key in stripe_keys), "Stripe billing is set", "set the STRIPE_ values in .env")
+    check(env.get("STRIPE_SECRET_KEY", "").startswith("sk_live_"), "Stripe uses a live key",
+          "switch to sk_live_ only after the launch checklist in README.md")
     for port in INTERNAL_DB_PORTS:
         check(not wildcard_listeners(port), f"Postgres {port} is not open to the network",
               f'in docker-compose.yml bind it to "127.0.0.1:{port}:5432", then docker compose up -d')

@@ -1,0 +1,3 @@
+# pip reads markers from the local Python, not the Lambda target, so this psycopg dependency is pinned.
+psycopg[binary]==3.2.6
+typing_extensions==4.12.2

@@ -4,18 +4,20 @@ The public company website. The home page (`/`) only presents the company and ha
 profiles are entered on a separate page, `/advisor`, which returns a graduate program list.
 
 ```
-Internet → Caddy (HTTPS, :80/:443) → gateway (:9080) → ProgramSearchAgent (:9003) → StudentNormalizer (:9000)
-                                         └──────────→ SchoolInfoProcessor (:9001)
+Internet → load balancer (HTTPS) → gateway → ProgramSearchAgent → StudentNormalizer
+                                      └─────→ SchoolInfoProcessor ←┘ (graph runtime only)
 ```
 
-Only Caddy faces the internet. The gateway exposes a small allowlisted API, so the unauthenticated
-internal service APIs stay on loopback.
+On AWS (`infra/`), only the load balancer faces the internet and only the gateway sits behind it. The
+other services are private, and each accepts traffic only from its callers. The gateway exposes a small
+allowlisted API, so the unauthenticated internal service APIs are never public. Locally the same
+services run on loopback ports.
 
 | Service | Role on this site |
 |---|---|
 | StudentNormalizer (SN) | Turns the resume or typed profile into a structured profile |
 | ProgramSearchAgent (PSA) | Searches the web and writes the recommendation list |
-| SchoolInfoProcessor (SIP) | Adds catalog facts to results it can match. The gateway reads it, so PSA's "never calls SIP" rule still holds |
+| SchoolInfoProcessor (SIP) | Adds catalog facts to results it can match. The gateway reads it. PSA's default `responses` runtime never calls SIP; the opt-in graph runtime reads SIP evidence |
 
 SchoolRecommender is not part of this site, so visitors get PSA's web list only (no catalog list A).
 
@@ -33,106 +35,145 @@ Tests: `.venv/bin/pytest`. Logs are in `logs/`.
 The stack uses its own ports and `data/psa`, so it does not touch dev services on 8000-8003 or
 PSA's evaluation data. It shares the local SN and SIP Postgres databases.
 
-## AWS preview (live now)
+Searching needs a signed-in account, so set `COGNITO_USER_POOL_ID` and `COGNITO_CLIENT_ID` first. The app
+client must allow `USER_PASSWORD_AUTH` and have no client secret.
 
-A static preview runs on S3 and CloudFront, so it stays up with this Mac off:
-https://djjasa59otczz.cloudfront.net
+## Accounts and plans
 
-It has the home page, sign-in and a signed-in account page. It stores no student data, and the profile form
-is deliberately not published. `infra/` holds the CDK stack (`AcadAdviserPreviewStack`, us-east-1).
+Visitors sign in with Amazon Cognito before they can search. The browser calls Cognito directly, then sends
+the ID token once to `POST /api/session`. The gateway checks its signature, issuer, audience, expiry and
+verified email, and sets its own httpOnly `aa_account` cookie for 30 days. Searches belong to the
+Cognito `sub`.
 
-"Start my list" goes to `/signin.html`, the site's own sign-in and sign-up form, which calls the Amazon Cognito
-API directly from the browser. It then goes to `/account.html`, which says program lists are opening soon.
-Cognito's hosted page stays configured but unused, ready for Google sign-in later. There is nothing private on this static site, so
-sign-in protects no data yet. When the form goes public, the backend must verify Cognito tokens itself.
-Verification emails use Cognito's default sender, which is limited to about 50 emails a day; move to
-Amazon SES before any real launch.
+| Plan | What it allows |
+|---|---|
+| Free | One search per mailbox (`jane+1@gmail.com` and `j.ane@gmail.com` count as one), with `FREE_FOLLOW_UPS` refinements. Free searches count toward the per-IP daily limit |
+| Unlimited, $99 per year | Searches up to `SEARCHES_PER_USER_PER_DAY` (fair use), with `FOLLOW_UPS_PER_SEARCH` refinements each. No per-IP limit |
 
-Update it after changing the site:
+Without a plan, the API answers 402 and the page links to `/account`. A failed upstream call gives the free
+search back. `MODEL_RUNS_PER_DAY` still caps the whole site, so raise it as subscribers grow.
+The prices on the home page and in the terms are written in the HTML: update them along with `PLAN_PRICE_LABEL`.
 
-```bash
-.venv/bin/python scripts/build_preview.py   # uses CONTACT_EMAIL from .env
-cd infra && CDK_DEFAULT_ACCOUNT=097771562795 npx cdk deploy AcadAdviserPreviewStack
-```
+Plan state lives in the tables `users`, `sessions`, `free_searches`, `subscriptions` and `stripe_events`:
+on AWS in the `acadadviser` Postgres database (set by `DB_HOST`), locally in `data/gateway/gateway.sqlite3`.
+Stripe is the record of truth for payments. To run the tests on Postgres, point
+`ACADADVISER_TEST_DATABASE_URL` at a throwaway database; each test wipes it.
 
-Remove it completely: `cd infra && npx cdk destroy AcadAdviserPreviewStack`.
+The old static S3 preview (`scripts/build_preview.py` and its `PreviewStack`) was removed: its pages
+cannot reach the gateway's session API.
 
-### Domain
+### Billing with Stripe
 
-`acadadviser.com` and `www.acadadviser.com` are set in `infra/cdk.json`, using an ACM certificate that
-renews automatically while its two validation CNAMEs stay at Namecheap. At Namecheap, `ALIAS @` and
-`CNAME www` point to `djjasa59otczz.cloudfront.net`. Keep the MX and TXT records: they carry the Google email.
+The gateway creates Stripe Checkout and Customer Portal sessions; card details only ever go to Stripe.
+`POST /api/stripe/webhook` verifies the `Stripe-Signature` header and applies each event once.
+Access follows the subscription status: `active`, `trialing` and `past_due` (while Stripe retries the card) allow searches.
 
-### Going functional on AWS
+Set up in the Stripe dashboard, in test mode first:
 
-This preview cannot process profiles. That needs the gateway, SN, SIP and PSA running as containers with
-a database, as a separate stack. PSA also keeps its state in local files, which must move to
-durable storage first. The Mac and Caddy steps below are the alternative to that.
+1. **Product and price:** one product, "AcadAdviserAI Unlimited", with a recurring yearly price of $99 USD.
+   Put its `price_...` id in `STRIPE_PRICE_ID`.
+2. **Stripe Tax:** turn it on, set the business address, and give the product the tax code for
+   software as a service. Add state registrations as Stripe reports that you reach thresholds.
+3. **Customer portal** (Settings → Billing → Customer portal): allow canceling at the end of the period,
+   updating the payment method and viewing invoices. Turn off plan switching.
+4. **Emails** (Settings → Billing → Subscriptions and emails): send receipts, failed-payment emails and
+   **upcoming renewal reminders**. The terms promise a reminder before each yearly renewal.
+5. **Retries:** turn on Smart Retries, and after the last retry set the subscription to **cancel**.
+   That ends the `past_due` grace period.
+6. **US only:** add the Radar rule `Block if :card_country: != 'US'`. The webhook also logs any
+   checkout with a non-US billing address.
+7. **Webhook endpoint:** `https://<domain>/api/stripe/webhook` with the events
+   `checkout.session.completed` and `customer.subscription.created`, `.updated` and `.deleted`.
+   Put its signing secret in `STRIPE_WEBHOOK_SECRET`.
 
-## Go live from this Mac
-
-Run `scripts/stack.py doctor` at any point. It lists what is still missing.
-
-### 1. Confirm inbound traffic can reach this Mac
-
-A traceroute on 2026-11-02 showed `192.168.50.1 → 10.10.25.1 → public internet`. The second private
-hop suggests **double NAT**, which would make a port forward on your router useless on its own.
-
-Open your router's admin page (http://192.168.50.1) and read its WAN IP:
-
-- **Matches your public IP** (76.8.94.233 when checked): forward ports 80 and 443 to this Mac.
-- **Starts with 10., 192.168., 172.16-31. or 100.64-127.**: there is another NAT upstream. Ask the
-  ISP or building for a public IP or for ports 80/443 to be forwarded. If they refuse, this
-  network cannot host directly; see "If inbound is blocked".
-
-Also check that your ISP plan allows running a server, and reserve this Mac's LAN IP on the router.
-
-### 2. DNS
-
-At the registrar, point `A @` and `A www` at your public IP. A home IP can change, so ask the ISP
-for a static IP or use the registrar's dynamic DNS.
-
-### 3. Production settings
-
-In `.env`, set `SITE_DOMAIN`, `CONTACT_EMAIL`, `COOKIE_SECURE=true`, `PSA_AUTH_MODE=api_key`.
-Review the spend guards too. Each search and follow-up is a paid model run.
-
-PSA and SN need `OPENAI_API_KEY` in their own `.env` files. Set a monthly budget limit in the OpenAI
-dashboard as a backstop. Do not serve the public from a personal ChatGPT plan.
-
-Rebind both Postgres ports to loopback (they currently accept LAN connections with weak passwords):
-in each `docker-compose.yml` use `"127.0.0.1:5432:5432"` / `"127.0.0.1:5433:5432"`, then `docker compose up -d`.
-
-### 4. Start and survive reboots
+Test locally with the Stripe CLI and card `4242 4242 4242 4242`:
 
 ```bash
-pkill -f "stack.py up"       # stop any test stack first
-cp deploy/com.acadadviser.*.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.acadadviser.stack.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.acadadviser.caddy.plist
+stripe listen --forward-to 127.0.0.1:9080/api/stripe/webhook   # prints the whsec_ secret for .env
 ```
 
-Caddy gets HTTPS certificates automatically once DNS and ports work. Then, in macOS Settings:
-- Allow Caddy through the firewall.
-- Turn on automatic login (agents start at login), and open Docker Desktop at login.
-- Keep the Mac plugged in with the lid open. `stack.py up` blocks idle sleep on AC power, but closing the lid still sleeps it.
+Test clocks in the dashboard simulate a renewal a year later and a failed card.
 
-### 5. Verify from outside
+### Launch checklist for payments
 
-On a phone with Wi-Fi off, open `https://<your domain>` and run one search.
+- Have a lawyer review `terms.html` and `privacy.html`: automatic renewal (California and other states),
+  the 14-day refund promise, the 18+ purchase rule, and minors using the service.
+- Run one full test-mode purchase, renewal (test clock), cancellation and refund on the deployed site.
+- Switch to `sk_live_` keys, a live price id and a live webhook secret. `stack.py doctor` warns until you do.
+- Refunds are made in the Stripe dashboard. To refund and end the plan, cancel the subscription there too.
 
-## If inbound is blocked
+## Deploy to AWS
 
-Keep everything on this Mac and add an outbound tunnel. Cloudflare Tunnel is the simplest, and has
-a free tier. This is a small cloud dependency: Cloudflare decrypts traffic at its edge, so resumes
-pass through it, and the privacy notice must say so. A small VPS running Caddy with a WireGuard link
-back to this Mac avoids that, but it is a server you rent and maintain.
+`infra/` holds one CDK stack, `AcadAdviserStack` (us-east-1, account 097771562795):
+
+| Part | What it is |
+|---|---|
+| Network | VPC over 2 zones, 1 NAT gateway, private subnets for everything but the load balancer |
+| Gateway | Fargate (ARM64, 0.25 vCPU / 0.5 GB) behind an HTTPS load balancer. HTTP redirects to HTTPS |
+| PSA, SN, SIP | Private Fargate services (0.5 vCPU / 1 GB each), found at `<name>.acadadviser.internal` |
+| Database | RDS Postgres 16 (`db.t4g.micro`, encrypted, 7-day backups, deletion protection). One database and login per service |
+| PSA files | EFS, encrypted, with automatic backups. Kept if the stack is destroyed |
+| Sign-in | Cognito user pool and app client (kept if the stack is destroyed) |
+| Secrets | The existing `OPENAI_API_KEY` secret, a Stripe secret this stack creates, and one generated DB login per service |
+| Alerts | Email to `contactEmail` on gateway errors, an unreachable gateway, or spend over 80% of `monthlyBudgetUsd` |
+
+Settings live in `infra/cdk.json`. `gatewaySettings` passes extra gateway settings, such as the spend guards.
+Expect roughly $120–150 a month before OpenAI usage: NAT gateway, load balancer, RDS and four small tasks.
+
+PSA must stay at one task: it keeps each running search in memory and streams it to the gateway. Its
+deploys stop the old task before starting the new one, so a search running during a deploy is lost.
+
+### First deploy
+
+Needs Docker running and the sibling repos (`ProgramSearchAgent`, `StudentNormalizer`,
+`SchoolInfoProcessor`) next to this one. Images are built from their working trees, uncommitted changes included.
+
+```bash
+cd infra && npm install
+CDK_DEFAULT_ACCOUNT=097771562795 npx cdk deploy AcadAdviserStack
+```
+
+The first deploy takes about 20–30 minutes, mostly RDS. Then:
+
+1. **Alerts:** confirm the AWS Notifications subscription email sent to `contactEmail`.
+2. **DNS at Namecheap:** point `ALIAS @` and `CNAME www` at the `LoadBalancerDns` output. Keep the Google
+   MX and TXT records. Add the three `DkimRecord` outputs as CNAMEs.
+3. **Sign-in email:** while `cognitoFromEmail` is empty, Cognito sends from its own address, limited to about
+   50 emails a day. Once SES shows the domain as verified, request SES production access in the console,
+   then set `cognitoFromEmail` (for example `no-reply@acadadviser.com`) in `cdk.json` and deploy again.
+4. **Stripe:** follow "Billing with Stripe" above, with the webhook at the `StripeWebhookUrl` output. Then store the keys
+   and restart the gateway so it reads them:
+
+   ```bash
+   aws secretsmanager put-secret-value --secret-id <StripeSecretName output> --secret-string \
+     '{"STRIPE_SECRET_KEY":"sk_test_...","STRIPE_WEBHOOK_SECRET":"whsec_...","STRIPE_PRICE_ID":"price_..."}'
+   aws ecs update-service --cluster acadadviser --service acadadviser-gateway --force-new-deployment
+   ```
+
+   Until the keys are set, the account page says subscriptions are not open yet.
+5. **Check:** on a phone with Wi-Fi off, open `https://acadadviser.com`, create an account, and run the free search.
+
+Later deploys run the same `cdk deploy` and rebuild whatever images changed.
+
+### Tearing it down
+
+`npx cdk destroy AcadAdviserStack` stops on the database until you turn off its deletion protection in the RDS
+console. A destroy leaves a final RDS snapshot, the EFS file system and the Cognito user pool. These hold
+customer data, so delete them yourself only when you mean to.
+
+## Running on this Mac
+
+`scripts/stack.py`, `deploy/Caddyfile` and the launchd files still run the whole site on this Mac for testing.
+They are no longer the way to host it publicly.
 
 ## Operating notes
 
 - **Deleting a student's data:** the privacy notice promises deletion on request, but there is no tool
-  yet. It is a manual removal from SN's Postgres tables and `data/psa`.
-- **Backups:** none are configured. A disk failure loses everything on this Mac.
-- **Capacity:** at most 3 profile uploads run at once. Later visitors see a busy message.
+  yet. It is a manual removal from the `student_normalizer` database, PSA's files on EFS, and the gateway's
+  `users`, `sessions`, `searches` and `free_searches` rows. Delete the Cognito user too.
+- **Backups:** RDS keeps 7 days of automated backups, and AWS Backup covers the EFS file system daily.
+  Stripe holds the payment records.
+- **Logs:** CloudWatch log groups `/acadadviser/<service>`, kept for a month.
+- **Capacity:** at most 3 profile uploads run at once per gateway task. Later visitors see a busy message.
 - **Legal:** the privacy notice and terms are plain-language drafts. Have them reviewed, especially
   if you serve minors or people in the EU or China.
