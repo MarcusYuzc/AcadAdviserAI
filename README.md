@@ -104,7 +104,7 @@ Test clocks in the dashboard simulate a renewal a year later and a failed card.
 
 ## Deploy to AWS
 
-`infra/` holds one CDK stack, `AcadAdviserStack` (us-east-1, account 097771562795):
+`infra/` holds one CDK stack, `acad-prod` (us-east-1, account 694913395513):
 
 | Part | What it is |
 |---|---|
@@ -130,7 +130,7 @@ Needs Docker running and the sibling repos (`ProgramSearchAgent`, `StudentNormal
 
 ```bash
 cd infra && npm install
-CDK_DEFAULT_ACCOUNT=097771562795 npx cdk deploy AcadAdviserStack
+AWS_PROFILE=acad-new npx cdk deploy acad-prod
 ```
 
 The first deploy takes about 20–30 minutes, mostly RDS. Then:
@@ -157,7 +157,7 @@ Later deploys run the same `cdk deploy` and rebuild whatever images changed.
 
 ### Tearing it down
 
-`npx cdk destroy AcadAdviserStack` stops on the database until you turn off its deletion protection in the RDS
+`npx cdk destroy acad-prod` stops on the database until you turn off its deletion protection in the RDS
 console. A destroy leaves a final RDS snapshot, the EFS file system and the Cognito user pool. These hold
 customer data, so delete them yourself only when you mean to.
 

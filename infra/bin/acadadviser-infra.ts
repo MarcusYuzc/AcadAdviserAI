@@ -11,8 +11,9 @@ const context = (key: string): string => {
   return value;
 };
 
-new AppStack(app, "AcadAdviserStack", {
-  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: "us-east-1" },
+new AppStack(app, "acad-prod", {
+  // CDK refuses to deploy with credentials for any other account.
+  env: { account: context("account"), region: "us-east-1" },
   domain: context("domain"),
   certificateArn: context("certificateArn"),
   contactEmail: context("contactEmail"),

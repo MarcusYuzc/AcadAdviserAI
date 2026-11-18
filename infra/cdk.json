@@ -1,12 +1,13 @@
 {
   "app": "npx ts-node --prefer-ts-exts bin/acadadviser-infra.ts",
   "context": {
+    "account": "694913395513",
     "domain": "acadadviser.com",
-    "certificateArn": "arn:aws:acm:us-east-1:097771562795:certificate/eb547958-089d-40a6-947e-5c33566cf1a0",
+    "certificateArn": "arn:aws:acm:us-east-1:694913395513:certificate/dc66f13e-30f1-4469-b1a5-89f6870ad544",
     "contactEmail": "contact@acadadviser.com",
     "openaiSecretName": "OPENAI_API_KEY",
     "monthlyBudgetUsd": 250,
-    "cognitoFromEmail": "",
+    "cognitoFromEmail": "no-reply@acadadviser.com",
     "gatewaySettings": {
       "MODEL_RUNS_PER_DAY": "200"
     }
